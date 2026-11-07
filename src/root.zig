@@ -3,13 +3,79 @@ const std = @import("std");
 pub const Layer = struct {
     weights: Matrix,
     biases: Matrix,
+    last_input: ?Matrix = null,
+    last_z: ?Matrix = null,
+    grad_weights: ?Matrix = null,
+    grad_biases: ?Matrix = null,
 
-    pub fn forward(self: Layer, other: Matrix) !Matrix {
-        const a = try other.mul(self.weights);
-        defer a.deinit();
-        const b = try a.addBias(self.biases);
-        defer b.deinit();
-        return b.relu();
+    pub fn forward(self: *Layer, input: Matrix) !Matrix {
+        if (self.last_input) |m| m.deinit();
+        if (self.last_z) |m| m.deinit();
+
+        // Clone input values instead of sharing pointers
+        const input_copy = try Matrix.empty_like(input);
+        @memcpy(input_copy.values, input.values);
+        self.last_input = input_copy;
+
+        const z_linear = try input.mul(self.weights);
+        defer z_linear.deinit();
+
+        const z = try z_linear.addBias(self.biases);
+        defer z.deinit();
+
+        // Clone z values for the backward pass cache
+        const z_copy = try Matrix.empty_like(z);
+        @memcpy(z_copy.values, z.values);
+        self.last_z = z_copy;
+
+        return z.relu();
+    }
+
+    pub fn backward(self: *Layer, output_gradient: Matrix) !Matrix {
+        const input = self.last_input orelse return error.NoForwardInputCache;
+        const z = self.last_z orelse return error.NoForwardZCache;
+
+        const z_deriv = try z.reluDerivative();
+        defer z_deriv.deinit();
+
+        const dZ = try output_gradient.mulElementWise(z_deriv);
+        defer dZ.deinit();
+
+        const input_t = try input.transpose();
+        defer input_t.deinit();
+
+        // Free old gradient caches if they exist
+        if (self.grad_weights) |m| m.deinit();
+        if (self.grad_biases) |m| m.deinit();
+
+        // Assign to the layer's gradient fields so update() can see them
+        self.grad_weights = try input_t.mul(dZ);
+        self.grad_biases = try dZ.sumRows();
+
+        const weights_t = try self.weights.transpose();
+        defer weights_t.deinit();
+
+        return dZ.mul(weights_t);
+    }
+
+    pub fn update(self: *Layer, learning_rate: f32) void {
+        const dw = self.grad_weights orelse return;
+        const db = self.grad_biases orelse return;
+        for (0..self.weights.rows * self.weights.cols) |i| {
+            self.weights.values[i] -= learning_rate * dw.values[i];
+        }
+        for (0..self.biases.rows * self.biases.cols) |i| {
+            self.biases.values[i] -= learning_rate * db.values[i];
+        }
+    }
+
+    pub fn deinit(self: *Layer) void {
+        self.weights.deinit();
+        self.biases.deinit();
+        if (self.last_input) |m| m.deinit();
+        if (self.last_z) |m| m.deinit();
+        if (self.grad_weights) |m| m.deinit();
+        if (self.grad_biases) |m| m.deinit();
     }
 };
 
@@ -20,7 +86,6 @@ pub const Matrix = struct {
     cols: usize,
 
     pub fn init(allocator: std.mem.Allocator, values: []const f32, rows: usize, cols: usize) !Matrix {
-        // Asset that the dimensions are logical
         std.debug.assert(values.len == rows * cols);
         const result = try Matrix.empty(allocator, rows, cols);
         @memcpy(result.values, values);
@@ -94,6 +159,26 @@ pub const Matrix = struct {
         return result;
     }
 
+    pub fn mulElementWise(self: Matrix, other: Matrix) !Matrix {
+        std.debug.assert(self.rows == other.rows and self.cols == other.cols);
+        var result = try Matrix.empty_like(self);
+        for (0..self.rows * self.cols) |i| {
+            result.values[i] = self.values[i] * other.values[i];
+        }
+        return result;
+    }
+
+    pub fn sumRows(self: Matrix) !Matrix {
+        var result = try Matrix.empty(self.allocator, 1, self.cols);
+        @memset(result.values, 0.0);
+        for (0..self.rows) |i| {
+            for (0..self.cols) |j| {
+                result.set(0, j, result.get(0, j) + self.get(i, j));
+            }
+        }
+        return result;
+    }
+
     pub fn add(self: Matrix, other: Matrix) !Matrix {
         std.debug.assert(self.rows == other.rows and self.cols == other.cols);
         var result = try Matrix.empty_like(self);
@@ -160,6 +245,27 @@ pub const Matrix = struct {
         return true;
     }
 };
+
+pub fn mseLoss(pred: Matrix, target: Matrix) !f32 {
+    std.debug.assert(pred.rows == target.rows and pred.cols == target.cols);
+    var sum: f32 = 0.0;
+    const n: f32 = @floatFromInt(pred.rows * pred.cols);
+    for (0..pred.rows * pred.cols) |i| {
+        const diff = pred.values[i] - target.values[i];
+        sum += diff * diff;
+    }
+    return sum / n;
+}
+
+pub fn mseDerivative(pred: Matrix, target: Matrix) !Matrix {
+    std.debug.assert(pred.rows == target.rows and pred.cols == target.cols);
+    var result = try Matrix.empty_like(pred);
+    const n: f32 = @floatFromInt(pred.rows * pred.cols);
+    for (0..pred.rows * pred.cols) |i| {
+        result.values[i] = 2.0 * (pred.values[i] - target.values[i]) / n;
+    }
+    return result;
+}
 
 test "Matrix" {
     const matrix_a = try Matrix.init(
@@ -237,18 +343,18 @@ test "Layer" {
         3,
         2,
     );
-    defer weights.deinit();
     const biases = try Matrix.init(
         std.testing.allocator,
         &[_]f32{ 1, 2 },
         1,
         2,
     );
-    defer biases.deinit();
-    const layer = Layer{
+    var layer = Layer{
         .weights = weights,
         .biases = biases,
     };
+    defer layer.deinit(); // Moved to defer at the end
+
     const other = try Matrix.init(
         std.testing.allocator,
         &[_]f32{ 1, 2, 3, 4, 5, 6 },
@@ -266,4 +372,61 @@ test "Layer" {
     );
     defer expected_result.deinit();
     try std.testing.expect(result.isEqual(expected_result));
+}
+
+test "Training Loop" {
+    var prng = std.Random.DefaultPrng.init(42);
+    const rand = prng.random();
+
+    // Initialize random weights and biases
+    const weights = try Matrix.random(std.testing.allocator, 2, 2, rand, .{ .min = -0.5, .max = 0.5 });
+    const biases = try Matrix.random(std.testing.allocator, 1, 2, rand, .{ .min = -0.5, .max = 0.5 });
+
+    var layer = Layer{
+        .weights = weights,
+        .biases = biases,
+    };
+    defer layer.deinit(); // Handles weights, biases, caches, and gradients safely at the end
+
+    // Synthetic input data (batch of 2 samples, 2 features)
+    const X = try Matrix.init(
+        std.testing.allocator,
+        &[_]f32{ 1.0, 0.5, 0.2, 1.0 },
+        2,
+        2,
+    );
+    defer X.deinit();
+
+    // Target output data
+    const Y = try Matrix.init(
+        std.testing.allocator,
+        &[_]f32{ 1.5, 2.0, 0.5, 1.2 },
+        2,
+        2,
+    );
+    defer Y.deinit();
+
+    var initial_loss: f32 = 0.0;
+    var final_loss: f32 = 0.0;
+    const learning_rate: f32 = 0.01;
+
+    for (0..100) |epoch| {
+        const pred = try layer.forward(X);
+        defer pred.deinit();
+
+        const loss = try mseLoss(pred, Y);
+        if (epoch == 0) initial_loss = loss;
+        if (epoch == 99) final_loss = loss;
+
+        const d_loss = try mseDerivative(pred, Y);
+        defer d_loss.deinit();
+
+        const dX = try layer.backward(d_loss);
+        defer dX.deinit();
+
+        layer.update(learning_rate);
+    }
+
+    // Verify that the loss decreased over training
+    try std.testing.expect(final_loss < initial_loss);
 }
