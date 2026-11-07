@@ -1,6 +1,6 @@
-(A) 2026-11-06 Create a Matrix struct managing explicit memory allocations, row counts, and column counts.
-2026-11-06 Implement matrix multiplication, transposition, and uniform random weight initialization functions.
-2026-11-06 Add activation functions like sigmoid or ReLU alongside their corresponding derivative functions.
-2026-11-06 Code forward propagation to pass features through weight matrices and bias vectors.
-2026-11-06 Implement backpropagation to compute output errors and update parameters via gradient descent.
+x 2026-11-07 2026-11-06 Create a Matrix struct managing explicit memory allocations, row counts, and column counts.
+x 2026-11-06 Implement matrix multiplication, transposition, and uniform random weight initialization functions.
+x 2026-11-06 Add activation functions like sigmoid or ReLU alongside their corresponding derivative functions.
+x 2026-11-06 Code forward propagation to pass features through weight matrices and bias vectors.
+(A) 2026-11-06 Implement backpropagation to compute output errors and update parameters via gradient descent.
 2026-11-06 Add scaled dot-product attention math and numerical stable softmax for future Transformer layers.
