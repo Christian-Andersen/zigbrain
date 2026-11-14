@@ -41,7 +41,6 @@ id = "zig-build"
 name = "zig-build"
 language = "system"
 pass_filenames = false
-always_run = true
 groups = ["slow"]
 entry = "zig build -Doptimize=ReleaseFast"
 
@@ -50,6 +49,5 @@ id = "test"
 name = "test"
 language = "system"
 pass_filenames = false
-always_run = true
 groups = ["slow"]
 entry = "zig build test"
